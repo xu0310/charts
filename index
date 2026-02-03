@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>數據列表</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/10.6.4/math.js"></script>
+    <style>
+        :root { --sidebar-w: 340px; --accent: #007acc; --success: #28a745; }
+        body { margin: 0; font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: #eee; display: flex; height: 100vh; overflow: hidden; }
+        
+        #sidebar { width: var(--sidebar-w); background: #252526; border-right: 1px solid #444; padding: 15px; display: flex; flex-direction: column; box-sizing: border-box; z-index: 100; }
+        #viewport { flex: 1; position: relative; background: #000; }
+        
+        .view-container { position: absolute; width: 100%; height: 100%; visibility: hidden; }
+        .view-container.active { visibility: visible; }
+        canvas { cursor: grab; }
+        canvas:active { cursor: grabbing; }
+
+        /* UI 卡片 */
+        .card { background: #333; padding: 12px; border-radius: 8px; margin-bottom: 12px; border-left: 4px solid var(--accent); }
+        h4 { margin: 0 0 10px 0; color: #00bfff; font-size: 13px; text-transform: uppercase; }
+        input { width: 100%; padding: 8px; margin: 5px 0; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; box-sizing: border-box; }
+        button { width: 100%; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; background: var(--accent); color: white; margin-top: 5px; }
+        
+        /* 數據清單 */
+        .data-list-container { flex-grow: 1; overflow-y: auto; background: #1e1e1e; border-radius: 4px; padding: 8px; margin-top: 10px; border: 1px solid #444; }
+        .data-item { display: flex; justify-content: space-between; font-family: monospace; font-size: 12px; padding: 4px 0; border-bottom: 1px solid #333; }
+        .data-header { font-weight: bold; color: var(--accent); border-bottom: 1px solid #555; margin-bottom: 5px; }
+
+        .btn-export { background: var(--success); margin-top: 10px; }
+        .reset-btn { position: absolute; bottom: 20px; right: 20px; background: rgba(255,255,255,0.1); color: white; border: 1px solid #666; padding: 8px 15px; border-radius: 20px; z-index: 10; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <div style="display:flex; gap:5px; margin-bottom:15px;">
+        <button id="btn2d" onclick="switchView('2d')">2D 分析</button>
+        <button id="btn3d" onclick="switchView('3d')" style="background:#555">3D 模型</button>
+    </div>
+
+    <div id="ctrl-2d">
+        <div class="card">
+            <h4>2D 函數 f(x)</h4>
+            <input type="text" id="input2d" placeholder="請輸入方程 (例: x^2)">
+            <button onclick="refreshPlot()">繪製</button>
+        </div>
+        <div class="card">
+            <h4>輸入數據點</h4>
+            <div style="display:flex; gap:4px;">
+                <input type="number" id="dataX" placeholder="X">
+                <input type="number" id="dataY" placeholder="Y">
+            </div>
+            <button style="background:#444" onclick="addPoint()">加入並記錄</button>
+        </div>
+        <div id="r2" style="color:#4ec9b0; font-family:monospace; margin: 5px 0;">R² = N/A</div>
+        
+        <strong>數據對照表</strong>
+        <div class="data-list-container" id="dataList">
+            <div class="data-item data-header"><span>X 座標</span><span>Y 座標</span></div>
+            </div>
+        
+        <button class="btn-export" onclick="export2d()">💾 匯出 2D 圖表</button>
+    </div>
+
+    <div id="ctrl-3d" style="display:none;">
+        <div class="card">
+            <h4>3D 函數 f(x, y)</h4>
+            <input type="text" id="input3d" placeholder="請輸入 3D 方程">
+            <button onclick="draw3d()">生成 3D 模型</button>
+        </div>
+        <button class="btn-export" onclick="export3d()">📸 匯出 3D 截圖</button>
+    </div>
+
+    <button onclick="location.reload()" style="margin-top:15px; background:#d44; font-size:12px;">重置全域</button>
+</div>
+
+<div id="viewport">
+    <div id="view2d" class="view-container active">
+        <button class="reset-btn" onclick="resetView()">返回原點</button>
+        <canvas id="chartCanvas"></canvas>
+    </div>
+    <div id="view3d" class="view-container"></div>
+</div>
+
+<script>
+    // --- 2D 邏輯 ---
+    const ctx = document.getElementById('chartCanvas').getContext('2d');
+    const chart = new Chart(ctx, {
+        type: 'scatter',
+        data: {
+            datasets: [
+                { label: '數據點', data: [], backgroundColor: '#ff6384', pointRadius: 5 },
+                { label: '回歸線', data: [], type: 'line', borderColor: 'rgba(75,192,192,0.6)', borderDash: [5,5], pointRadius: 0 },
+                { label: '函數曲線', data: [], type: 'line', borderColor: '#ffce56', pointRadius: 0, showLine: true }
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            scales: {
+                x: { type: 'linear', grid: {color:'#333'} },
+                y: { grid: {color:'#333'} }
+            },
+            plugins: {
+                zoom: {
+                    pan: { enabled: true, mode: 'xy', modifierKey: null },
+                    zoom: { wheel: { enabled: true }, mode: 'xy' }
+                }
+            }
+        }
+    });
+
+    chart.options.plugins.zoom.pan.onPan = () => refreshPlot();
+    chart.options.plugins.zoom.zoom.onZoom = () => refreshPlot();
+
+    let pointsStore = [];
+    function addPoint() {
+        const x = parseFloat(document.getElementById('dataX').value);
+        const y = parseFloat(document.getElementById('dataY').value);
+        if(isNaN(x) || isNaN(y)) return;
+
+        pointsStore.push({x, y});
+        chart.data.datasets[0].data.push({x, y});
+        
+        // 更新列表
+        const list = document.getElementById('dataList');
+        const item = document.createElement('div');
+        item.className = 'data-item';
+        item.innerHTML = `<span>${x}</span><span>${y}</span>`;
+        list.appendChild(item);
+
+        updateRegression();
+        chart.update();
+    }
+
+    function updateRegression() {
+        if(pointsStore.length < 2) return;
+        const n = pointsStore.length;
+        let sx=0, sy=0, sxy=0, sx2=0, sy2=0;
+        pointsStore.forEach(p => { sx+=p.x; sy+=p.y; sxy+=p.x*p.y; sx2+=p.x*p.x; sy2+=p.y*p.y; });
+        const slope = (n*sxy - sx*sy) / (n*sx2 - sx*sx);
+        const intercept = (sy - slope*sx) / n;
+        const r = (n*sxy - sx*sy) / Math.sqrt((n*sx2 - sx*sx) * (n*sy2 - sy*sy));
+        document.getElementById('r2').innerText = `R² = ${(r*r).toFixed(4)}`;
+        const xMin = chart.scales.x.min, xMax = chart.scales.x.max;
+        chart.data.datasets[1].data = [{x:xMin, y:slope*xMin+intercept}, {x:xMax, y:slope*xMax+intercept}];
+    }
+
+    function refreshPlot() {
+        const expr = document.getElementById('input2d').value;
+        if(!expr) return;
+        const xMin = chart.scales.x.min, xMax = chart.scales.x.max;
+        const curve = [];
+        const step = (xMax - xMin) / 300;
+        for(let x = xMin; x <= xMax; x += step) {
+            try { const y = math.evaluate(expr, {x}); if(isFinite(y)) curve.push({x, y}); } catch(e){}
+        }
+        chart.data.datasets[2].data = curve;
+        chart.update('none');
+    }
+
+    function export2d() {
+        const a = document.createElement('a');
+        a.href = chart.toBase64Image();
+        a.download = '2d_chart.png';
+        a.click();
+    }
+
+    // --- 3D 邏輯 ---
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    document.getElementById('view3d').appendChild(renderer.domElement);
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    camera.position.set(10, 10, 10);
+    scene.add(new THREE.GridHelper(20, 20, 0x444444), new THREE.AxesHelper(10));
+    scene.add(new THREE.AmbientLight(0x404040), new THREE.PointLight(0xffffff, 1));
+
+    let mesh = null;
+    function draw3d() {
+        if(mesh) scene.remove(mesh);
+        const expr = document.getElementById('input3d').value;
+        if(!expr) return;
+        const geo = new THREE.PlaneGeometry(20, 20, 50, 50);
+        const pos = geo.attributes.position.array;
+        for(let i=0; i<pos.length; i+=3) {
+            try { pos[i+2] = math.evaluate(expr, {x: pos[i], y: pos[i+1]}); } catch(e){ pos[i+2]=0; }
+        }
+        geo.computeVertexNormals();
+        mesh = new THREE.Mesh(geo, new THREE.MeshNormalMaterial({wireframe:true, side:THREE.DoubleSide}));
+        mesh.rotation.x = -Math.PI/2;
+        scene.add(mesh);
+    }
+
+    function export3d() {
+        renderer.render(scene, camera); // 強制渲染一次確保緩衝區有內容
+        const link = document.createElement('a');
+        link.download = '3d_capture.png';
+        link.href = renderer.domElement.toDataURL('image/png');
+        link.click();
+    }
+
+    function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
+    animate();
+
+    // --- UI 切換 ---
+    function switchView(m) {
+        document.getElementById('view2d').classList.toggle('active', m==='2d');
+        document.getElementById('view3d').classList.toggle('active', m==='3d');
+        document.getElementById('ctrl-2d').style.display = m==='2d'?'block':'none';
+        document.getElementById('ctrl-3d').style.display = m==='3d'?'block':'none';
+        document.getElementById('btn2d').style.background = m==='2d'?'#007acc':'#555';
+        document.getElementById('btn3d').style.background = m==='3d'?'#007acc':'#555';
+        if(m==='3d') resize3d();
+    }
+
+    function resetView() { chart.resetZoom(); refreshPlot(); }
+    function resize3d() {
+        const v = document.getElementById('viewport');
+        renderer.setSize(v.clientWidth, v.clientHeight);
+        camera.aspect = v.clientWidth / v.clientHeight;
+        camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', resize3d);
+    resize3d();
+</script>
+</body>
+</html>
